@@ -1,0 +1,56 @@
+# Qwen3-14B · Function Calling LoRA SFT (LlamaFactory) — AutoDL A800-80G 抽样路线
+# 在 GPU 模式下运行:
+#   cd /path/to/function-calling-sft
+#   llamafactory-cli train configs/qwen3_14b_lora_sft_autodl.yaml
+
+### model
+model_name_or_path: /path/to/Qwen3-14B   # 本地下载的基座路径(或 Qwen/Qwen3-14B 在线拉取)
+trust_remote_code: true
+
+### method
+stage: sft
+do_train: true
+finetuning_type: lora
+lora_rank: 16
+lora_alpha: 32
+lora_dropout: 0.05
+lora_target: all              # 覆盖 q/k/v/o + gate/up/down 全线性层
+
+### dataset
+dataset: fc_sft_35k           # 抽样路线：分层 35k（全量用 fc_sft）
+dataset_dir: data/processed
+eval_dataset: fc_sft_dev
+template: qwen3               # LlamaFactory 须有 qwen3 模板（训练前已校验）
+cutoff_len: 4096             # recon: p99=2445, max=4178, 近零截断
+packing: true                # 打包短序列填满4096，消除padding浪费（FC数据p50=672，提速~3-4x）
+neat_packing: true           # block-diagonal mask，打包的序列之间互不注意，保证正确性
+overwrite_cache: true
+preprocessing_num_workers: 16
+dataloader_num_workers: 4
+
+### output
+output_dir: /path/to/saves/qwen3-14b-fc-lora   # 建议指向大容量数据盘
+logging_steps: 10
+save_steps: 180
+save_total_limit: 3
+plot_loss: true
+overwrite_output_dir: true
+report_to: none
+
+### train
+per_device_train_batch_size: 2       # A800-80G 充裕，吃满显存提吞吐
+gradient_accumulation_steps: 8       # 有效 batch = 2 × 8 = 16
+learning_rate: 1.0e-4
+num_train_epochs: 1.0                # 先1ep快速出BFCL提升(~5h)；不够再加第2ep。SDPA下packing提速有限
+lr_scheduler_type: cosine
+warmup_ratio: 0.1
+bf16: true
+flash_attn: sdpa                     # A800 上 PyTorch SDPA 自动走 FlashAttention-2 内核(torch2.x内置)，无需 flash-attn 包
+gradient_checkpointing: true
+ddp_timeout: 180000000
+seed: 42
+
+### eval
+per_device_eval_batch_size: 2
+eval_strategy: steps
+eval_steps: 500

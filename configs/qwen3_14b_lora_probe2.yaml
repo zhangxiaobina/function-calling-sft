@@ -1,0 +1,50 @@
+# Qwen3-14B · FC LoRA — 计时探针 v2(35k 子集 + batch_size=2 试摊薄)
+# 目的:在缩短后的配置上测真实 s/it,并验证 GB10(带宽瓶颈)下 bs=2 是否净加速。
+# 只跑 30 步,不产出可用权重。
+# 运行: llamafactory-cli train configs/qwen3_14b_lora_probe2.yaml
+
+### model
+model_name_or_path: /path/to/Qwen3-14B
+trust_remote_code: true
+
+### method
+stage: sft
+do_train: true
+finetuning_type: lora
+lora_rank: 16
+lora_alpha: 32
+lora_dropout: 0.05
+lora_target: all
+
+### dataset
+dataset: fc_sft_35k
+dataset_dir: data/processed
+template: qwen3
+cutoff_len: 4096
+overwrite_cache: true
+preprocessing_num_workers: 16
+dataloader_num_workers: 4
+
+### output
+output_dir: saves/qwen3-14b-fc-probe2
+logging_steps: 1
+save_strategy: "no"
+plot_loss: false
+overwrite_output_dir: true
+report_to: none
+
+### train
+per_device_train_batch_size: 2       # 试 bs=2(带宽瓶颈下或可摊薄权重流式读取)
+gradient_accumulation_steps: 8       # 有效 batch 仍 16
+max_steps: 30
+learning_rate: 1.0e-4
+lr_scheduler_type: cosine
+warmup_ratio: 0.1
+bf16: true
+flash_attn: sdpa
+gradient_checkpointing: true
+ddp_timeout: 180000000
+seed: 42
+
+### eval
+val_size: 0

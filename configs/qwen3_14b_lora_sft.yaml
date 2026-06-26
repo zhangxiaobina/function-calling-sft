@@ -1,0 +1,53 @@
+# Qwen3-14B · Function Calling LoRA SFT (LlamaFactory)
+# 训练在 PGX(GB10/aarch64)上跑；启动前确认环境与显存。
+# 运行: llamafactory-cli train configs/qwen3_14b_lora_sft.yaml
+
+### model
+model_name_or_path: Qwen/Qwen3-14B
+trust_remote_code: true
+
+### method
+stage: sft
+do_train: true
+finetuning_type: lora
+lora_rank: 16
+lora_alpha: 32
+lora_dropout: 0.05
+lora_target: all              # 覆盖 q/k/v/o + gate/up/down 全线性层
+
+### dataset
+dataset: fc_sft               # 见 data/processed/dataset_info.json(由 build_dataset.py 生成)
+dataset_dir: data/processed
+eval_dataset: fc_sft_dev
+template: qwen3               # ⚠️ 确认安装的 LlamaFactory 有 qwen3 模板；没有则退 qwen
+cutoff_len: 4096             # 由 recon 定：p99=2445, max=4178, 4096 覆盖 ~100%
+overwrite_cache: true
+preprocessing_num_workers: 16
+dataloader_num_workers: 4
+
+### output
+output_dir: saves/qwen3-14b-fc-lora
+logging_steps: 10
+save_steps: 500
+save_total_limit: 3
+plot_loss: true
+overwrite_output_dir: true
+report_to: none
+
+### train
+per_device_train_batch_size: 1
+gradient_accumulation_steps: 16      # 有效 batch 16
+learning_rate: 1.0e-4
+num_train_epochs: 3.0
+lr_scheduler_type: cosine
+warmup_ratio: 0.1
+bf16: true
+flash_attn: sdpa                     # pgx(aarch64+sm_121)无 flash-attn,退 PyTorch SDPA
+gradient_checkpointing: true
+ddp_timeout: 180000000
+seed: 42
+
+### eval
+per_device_eval_batch_size: 1
+eval_strategy: steps
+eval_steps: 500

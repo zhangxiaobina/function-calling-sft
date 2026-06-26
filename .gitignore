@@ -1,0 +1,28 @@
+# data
+data/raw/
+data/processed/
+data/cache/
+*.arrow
+*.parquet
+
+# models / checkpoints
+models/
+checkpoints/
+saves/
+*.safetensors
+*.bin
+*.gguf
+
+# python
+__pycache__/
+*.pyc
+.venv/
+venv/
+.ipynb_checkpoints/
+
+# eval outputs
+eval/results/
+*.log
+
+# os
+.DS_Store
