@@ -1,0 +1,64 @@
+# Qwen3-14B · Function-Calling DPO 偏好对齐 (LlamaFactory)
+# ---------------------------------------------------------------------------
+# 目标：纠正窄域单轮 FC-SFT 的一个副作用——多步任务中模型倾向「直接编造」
+#       中间结果而非真实调用工具（即 <think> 被压短、第二跳早停）。
+#       以 SFT-merged 为基座与 reference，用「真实逐跳调用的成功轨迹(chosen)」
+#       vs「编造中间结果的失败轨迹(rejected)」构成偏好对，把「该调工具」的偏好压回去。
+#
+# 数据从哪来：偏好对由 scripts/build_dpo_dataset.py 从两档轨迹 dump 配对生成
+#            （chosen=强/未微调档成功轨迹，rejected=SFT 档同任务失败轨迹），
+#            注册见 docs/dpo.md。仓库只提供脚手架与格式示例，不分发偏好数据；
+#            数据够了即可照此训练、可复现。
+#
+# 运行（GPU；建议与 SFT 同机或同级单卡）：
+#   cd /path/to/function-calling-sft
+#   llamafactory-cli train configs/qwen3_14b_lora_dpo.yaml
+
+### model —— 基座 = SFT 合并后的完整权重（不是 adapter！）。LoRA-DPO 下它同时充当 reference：
+###            新 LoRA 关掉时即回到 SFT-merged，正是「相对 SFT 做偏好对齐」的语义。
+model_name_or_path: /path/to/Qwen3-14B-fc-merged   # merge_and_unload 后的 SFT 权重目录
+trust_remote_code: true
+
+### method
+stage: dpo
+do_train: true
+finetuning_type: lora
+lora_rank: 8                  # DPO 改动量小，r8 足够（SFT 用的 r16）
+lora_alpha: 16
+lora_dropout: 0.05
+lora_target: all
+
+### DPO 偏好损失
+pref_beta: 0.1               # 标准起点；越大越保守(偏离 reference 越少)。无改善→试 0.05；irrelevance 掉→提 0.2
+pref_loss: sigmoid          # 标准 DPO
+pref_ftx: 0.0               # 可选：>0 叠加一点 SFT 正则(如 0.1)防遗忘；先 0
+
+### dataset —— 在 data/processed/dataset_info.json 注册(ranking:true)，注册条目见 docs/dpo.md
+dataset: fc_dpo
+dataset_dir: data/processed
+template: qwen3
+cutoff_len: 16384          # 多步轨迹 + 强化 system 较长；与部署端点 max-model-len 对齐，留足余量（SFT 是 4096）
+overwrite_cache: true
+preprocessing_num_workers: 8
+
+### output
+output_dir: /path/to/saves/qwen3-14b-fc-dpo
+logging_steps: 5
+save_steps: 100
+save_total_limit: 3
+plot_loss: true
+overwrite_output_dir: true
+report_to: none
+
+### train
+per_device_train_batch_size: 1     # DPO 一条样本含 chosen+rejected 两条序列，显存占用翻倍
+gradient_accumulation_steps: 8     # 有效 batch = 8
+learning_rate: 5.0e-7              # 比 SFT(1e-4) 小两个量级；DPO 常用 5e-7~5e-6，先保守起步
+num_train_epochs: 2.0             # 偏好数据少时跑 2~3 ep；盯 logs 里 rewards/accuracies、rewards/margins
+lr_scheduler_type: cosine
+warmup_ratio: 0.1
+bf16: true
+flash_attn: sdpa
+gradient_checkpointing: true
+ddp_timeout: 180000000
+seed: 42

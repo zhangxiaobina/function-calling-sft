@@ -43,6 +43,9 @@ baseline BFCL V4 (微调前)  ──┐
 - **W4A16 量化高性价比**：体积与运行时显存压到**约 1/3**，BFCL 八类整体**基本无损**，单流解码**约 3× 提速**，使 14B 可单卡本地部署。
 - **量化「无损」有边界**：上面的「基本无损」仅在 BFCL **单轮 AST 口径**成立；接进多步 agentic 任务时，
   量化叠加窄域 SFT 会在长链路上放大误差——这条反直觉但真实的结论在 [edu-agent](https://github.com/zhangxiaobina/edu-agent) 有完整记录。
+- **DPO 修正多步副作用**：窄域单轮 FC-SFT 会让模型在多步任务里倾向「编造」中间结果而非续调工具；
+  本仓附一条 **DPO 偏好对齐**链路（`base 成功轨迹` vs `SFT 编造轨迹` 的偏好对）从模型层把「该调工具」压回去，
+  脚手架与复现见 [`docs/dpo.md`](docs/dpo.md)。
 
 > 复现后能在本地拿到逐类的精确数字（脚本与口径见下文）；本 README 只给定性结论，不替读者的硬件/版本背书具体数值。
 
@@ -56,10 +59,12 @@ function-calling-sft/
 ├── configs/                          LlamaFactory 训练配置
 │   ├── qwen3_14b_lora_sft_autodl.yaml  实际产出 adapter 的配置(单卡,子集,1ep,packing)
 │   ├── qwen3_14b_lora_sft.yaml         全量数据/多 epoch 的等价配置
+│   ├── qwen3_14b_lora_dpo.yaml         DPO 偏好对齐配置(stage:dpo, SFT-merged 作基座+reference)
 │   ├── qwen3_14b_lora_probe.yaml       步速计时探针(只跑少量步,不产权重)
 │   └── qwen3_14b_lora_probe2.yaml      步速探针 v2
 ├── data/
 │   ├── fixtures/                     离线自测用的小样本(每源数条;入库)
+│   │   └── fc_dpo_sample.jsonl         DPO 偏好对的合成格式示例(仅看结构,勿入训练集)
 │   └── processed/                    构建产物(大 jsonl,.gitignore 不入库)
 ├── docs/
 │   ├── data-format.md                统一 IR → LlamaFactory sharegpt+tools 规范
@@ -67,7 +72,8 @@ function-calling-sft/
 │   ├── datasets-license.md           数据源 license 复核清单
 │   ├── training.md                   SFT 超参 + 长度 recon + 训练说明
 │   ├── evaluation.md                 BFCL V4 评测方法学与复现
-│   └── quantization.md               GPTQ W4A16 量化方法学与复现
+│   ├── quantization.md               GPTQ W4A16 量化方法学与复现
+│   └── dpo.md                        DPO 偏好对齐:修正 FC-SFT 的多步副作用(方法+复现)
 └── scripts/
     ├── inspect_dataset.py            看各数据源的真实原始字段
     ├── adapters.py                   各源(glaive/hermes/toolace) → 统一 IR 的适配器
@@ -78,7 +84,9 @@ function-calling-sft/
     ├── merge_lora.py                 LoRA adapter → 合并回基座
     ├── run_bfcl.sh                   BFCL V4 generate + evaluate(八类)
     ├── quantize_w4a16.py             GPTQ W4A16 量化(in-domain 校准)
-    └── bench_decode.py               解码吞吐基准(bf16 vs W4A16)
+    ├── bench_decode.py               解码吞吐基准(bf16 vs W4A16)
+    ├── build_dpo_dataset.py          两档轨迹 dump → 配偏好对(base成功/SFT失败) → sharegpt-dpo
+    └── validate_dpo_dataset.py       本地校验 DPO 数据集合规(无需 GPU,挡格式坑)
 ```
 
 ## 研究思路与关键取舍
@@ -131,6 +139,14 @@ python scripts/quantize_w4a16.py \
 scripts/run_bfcl.sh /path/to/Qwen3-14B-fc-merged-W4A16 w4a16          # 验量化是否无损
 python scripts/bench_decode.py /path/to/Qwen3-14B-fc-merged       merged_bf16
 python scripts/bench_decode.py /path/to/Qwen3-14B-fc-merged-W4A16 w4a16
+
+# ── 6) (可选) DPO 偏好对齐：修正窄域 SFT 的多步「编造」副作用 ──
+#     偏好对由两档轨迹 dump 配对生成(chosen=成功轨迹/rejected=同任务编造轨迹)；仓库不分发数据。
+python3 scripts/build_dpo_dataset.py --chosen traj_base.jsonl --rejected traj_sft.jsonl \
+        --tools tools.openai.json --out data/processed/fc_dpo_train.jsonl --mode trajectory
+python3 scripts/validate_dpo_dataset.py data/processed/fc_dpo_train.jsonl --cutoff 16384
+# 在 data/processed/dataset_info.json 注册 fc_dpo(见 docs/dpo.md) 后训练：
+llamafactory-cli train configs/qwen3_14b_lora_dpo.yaml                # 详见 docs/dpo.md
 ```
 
 > 模型权重（LoRA adapter / 量化模型）体积较大，不随仓库分发；按上面步骤可自行产出，后续可能另行发布。
