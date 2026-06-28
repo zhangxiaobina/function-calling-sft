@@ -56,6 +56,55 @@ def _unwrap_tools(openai_tools):
 
 
 # --------------------------------------------------------------------------- #
+# 配对判据：strict（精确成功）/ loose（覆盖度——B）
+# --------------------------------------------------------------------------- #
+def _match_group(group, name):
+    """required 每项是工具名 str 或 list[str]（任一可接受）。"""
+    return name in (group if isinstance(group, list) else [group])
+
+
+def _coverage(trace, required):
+    """该轨迹在『必需工具有序子序列』上推进到第几步（0..len(required)）——衡量它把真实
+    工具链走了多远。required 缺失时返回 None（回退 strict）。"""
+    if not required:
+        return None
+    tools = [t.get("tool") for t in (trace or [])]
+    i = 0
+    for t in tools:
+        if i < len(required) and _match_group(required[i], t):
+            i += 1
+    return i
+
+
+def is_pair(c, r, criterion):
+    """c=base 记录(chosen 源), r=sft 记录(rejected 源)。返回是否构成偏好对。
+
+    strict：base 严格成功 且 sft 未成功（原口径）。
+    loose（B）：在 strict 基础上，再纳入『base 把真实工具链走得比 sft 更远』的对——
+      base 干净(无报错、有最终回答、覆盖≥2)且 sft 编造/早停(未成功、有最终回答)且
+      base 覆盖度 > sft 覆盖度。捕获 base 用了同样合理的工具但没精确命中钦定序列的情形，
+      同时靠『覆盖度更高』过滤掉 base 自己也跑偏/死循环的伪对。
+    """
+    if r is None:
+        return False, "rejected 档缺该任务"
+    strict = bool(c.get("success")) and not bool(r.get("success"))
+    if criterion == "strict":
+        return strict, ("" if strict else "未满足 strict(base成功∧sft失败)")
+    # loose
+    if strict:
+        return True, ""
+    required = c.get("required_tools")
+    bc, sc = _coverage(c.get("trace"), required), _coverage(r.get("trace"), required)
+    if bc is None:
+        return False, "无 required_tools，loose 无法判(请重 dump)"
+    base_good = (not c.get("error")) and bool(c.get("final_answer")) and bc >= 2
+    sft_bad = (not r.get("success")) and bool(r.get("final_answer"))
+    if base_good and sft_bad and bc > sc:
+        return True, ""
+    return False, f"loose 未过(base_cov={bc} sft_cov={sc} base_good={base_good} sft_bad={sft_bad})"
+
+
+# --------------------------------------------------------------------------- #
 # 轨迹 ↔ Hermes 文本
 # --------------------------------------------------------------------------- #
 def _system_of(messages):
@@ -167,6 +216,9 @@ def main():
     ap.add_argument("--tools", required=True, help="tools.openai.json")
     ap.add_argument("--out", default="fc_dpo_train.jsonl")
     ap.add_argument("--mode", choices=["trajectory", "turn"], default="trajectory")
+    ap.add_argument("--criterion", choices=["strict", "loose"], default="strict",
+                    help="strict=base精确成功∧sft失败(原口径)；"
+                         "loose(B)=再纳入 base 真实工具链覆盖度高于 sft 的对(需 dump 带 required_tools)")
     args = ap.parse_args()
 
     chosen = {r["id"]: r for r in _load_jsonl(args.chosen)}
@@ -177,14 +229,9 @@ def main():
     samples, skipped = [], []
     for tid, c in chosen.items():
         r = rejected.get(tid)
-        if r is None:
-            skipped.append((tid, "rejected 档缺该任务"))
-            continue
-        if not c.get("success"):
-            skipped.append((tid, "chosen(base)未成功，无正样本"))
-            continue
-        if r.get("success"):
-            skipped.append((tid, "rejected(sft)也成功，无偏好差"))
+        ok, why = is_pair(c, r, args.criterion)
+        if not ok:
+            skipped.append((tid, why))
             continue
         samples.append(make_sample(c, r, tools_str, args.mode))
 
@@ -192,7 +239,7 @@ def main():
         for s in samples:
             f.write(json.dumps(s, ensure_ascii=False) + "\n")
 
-    print(f"mode={args.mode}  生成偏好对 {len(samples)} 条 → {args.out}")
+    print(f"mode={args.mode} criterion={args.criterion}  生成偏好对 {len(samples)} 条 → {args.out}")
     for tid, why in skipped:
         print(f"  跳过 {tid:32s} {why}")
     if len(samples) < 50:
