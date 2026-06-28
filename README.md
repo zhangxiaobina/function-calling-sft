@@ -144,6 +144,11 @@ python scripts/bench_decode.py /path/to/Qwen3-14B-fc-merged-W4A16 w4a16
 #     偏好对由两档轨迹 dump 配对生成(chosen=成功轨迹/rejected=同任务编造轨迹)；仓库不分发数据。
 python3 scripts/build_dpo_dataset.py --chosen traj_base.jsonl --rejected traj_sft.jsonl \
         --tools tools.openai.json --out data/processed/fc_dpo_train.jsonl --mode trajectory
+# 数据量不足时加 --criterion loose：在 strict(base 精确成功∧sft 失败) 基础上，
+# 再纳入「base 真实工具链覆盖度高于 sft」的对（需 dump 时 trace 带 required_tools 字段）
+python3 scripts/build_dpo_dataset.py --chosen traj_base.jsonl --rejected traj_sft.jsonl \
+        --tools tools.openai.json --out data/processed/fc_dpo_train.jsonl --mode trajectory \
+        --criterion loose
 python3 scripts/validate_dpo_dataset.py data/processed/fc_dpo_train.jsonl --cutoff 16384
 # 在 data/processed/dataset_info.json 注册 fc_dpo(见 docs/dpo.md) 后训练：
 llamafactory-cli train configs/qwen3_14b_lora_dpo.yaml                # 详见 docs/dpo.md
